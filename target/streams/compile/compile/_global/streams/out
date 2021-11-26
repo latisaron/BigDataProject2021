@@ -1,0 +1,7 @@
+[0m[[0m[31merror[0m] [0m[0mC:\Users\User\Desktop\UPM_2021_2022\SEMESTER_1\BIG_DATA\course_6\sparkapp\src\main\scala\MyApp.scala:203:15: not found: value auxDFTrain[0m
+[0m[[0m[31merror[0m] [0m[0m        Array(auxDFTrain, auxDFTest)[0m
+[0m[[0m[31merror[0m] [0m[0m              ^[0m
+[0m[[0m[31merror[0m] [0m[0mC:\Users\User\Desktop\UPM_2021_2022\SEMESTER_1\BIG_DATA\course_6\sparkapp\src\main\scala\MyApp.scala:203:27: not found: value auxDFTest[0m
+[0m[[0m[31merror[0m] [0m[0m        Array(auxDFTrain, auxDFTest)[0m
+[0m[[0m[31merror[0m] [0m[0m                          ^[0m
+[0m[[0m[31merror[0m] [0m[0mtwo errors found[0m
