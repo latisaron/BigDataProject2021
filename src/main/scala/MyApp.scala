@@ -54,8 +54,10 @@ object MyApp extends remainingMethodsClass{
         val proximityToHolidayTransformer = new proximityToHoliday().setHandleInvalid("skip") // here we compute the US holiday/event list for those Year values (holidayCalendar class defined below)
         val depDelayTaxiOutInteractionTransformer = new depDelayTaxiOutInteraction().setHandleInvalid("skip") // create intraction variable between old DepDelay and TaxiOut
         val origDestInteractionTransformer = new origDestInteraction().setHandleInvalid("skip") // create intraction variable between Origin and Dest
+        val monthDayofMonthInteractionTransformer = new  monthDayofMonthInteraction().setHandleInvalid("skip") // create interaction variable between Month and DayofMonth
+        val depDelayOrigInteractionTransformer = new depDelayOrigInteraction().setHandleInvalid("skip")
         val dropRemainingStringTransformer = new dropRemainingString() // just drop anything that was not succesfully converted to Int
-        val pipeline = new Pipeline().setStages(
+        val pipelineTransformers = new Pipeline().setStages(
             Array(
                 dropperTransformer, 
                 emptyColumnsAndFieldsTransformer,  
@@ -65,66 +67,73 @@ object MyApp extends remainingMethodsClass{
                 countriesAndCarriersToNumbersTransformer ,
                 proximityToHolidayTransformer,
                 depDelayTaxiOutInteractionTransformer,
-                origDestInteractionTransformer
+                origDestInteractionTransformer,
+                monthDayofMonthInteractionTransformer,
+
+                dropRemainingStringTransformer
             )
         )
-        
-        val intermediaryPipeline = pipeline.fit(rawDF)
+        // transform the original DF into the DF we are going to use
+        val intermediaryPipeline = pipelineTransformers.fit(rawDF)
         var intermediaryDF = intermediaryPipeline.transform(rawDF)
 
+        // get column names that are not ArrDelay
+        var variableNames = intermediaryDF.columns.filter(_ != "ArrDelay")
+
+        // create the assembler that's gonna add the features column
+        val generalAssembler = new VectorAssembler().setInputCols(variableNames).setOutputCol("features").setHandleInvalid("skip")
+        // create the pipeline that's gonna use the assembler
+        val pipelineAssembler = new Pipeline().setStages(Array(generalAssembler))
+        // creating the new DF
+        val pipelineAssemblerRes = pipelineAssembler.fit(intermediaryDF)
+        val featuresDF = pipelineAssemblerRes.transform(intermediaryDF)
         // split the data
-        val splitData = intermediaryDF.randomSplit(Array(0.8, 0.2))
+        val splitData = featuresDF.randomSplit(Array(0.8, 0.2))
 
         // get training and test
         var training = splitData(0)
         var test = splitData(1)
 
-        // standardize each column except for ArrDelay
-        for (columnName <- training.columns){
-            if ((columnName != "ArrDelay") && (columnExists(training, columnName))){
-                val auxResult = standardizeColumn(training, test, columnName)
-                training = auxResult(0)
-                test = auxResult(1)
-            }
-        }
+        //create the standard caler
+        val scaler = new StandardScaler().setInputCol("features").setOutputCol("scaledFeatures").setWithStd(true).setWithMean(true)
+        // create the pipeline for the standard scaler
+        val pipelineScaler = new Pipeline().setStages(Array(scaler))
+        // get the scaler model
+        val scalerModel = pipelineScaler.fit(training)
+        // use the same scaler model to transform both test and training so no info is leaked from test to train
+        val scaledTraining = scalerModel.transform(training)
+        val scaledTest = scalerModel.transform(test)
 
         // FOR TRAINING
 
-        // assembler transformer
-        val assemblerTraining = new VectorAssembler().setInputCols(training.columns).setOutputCol("features").setHandleInvalid("skip")
-
         // machine learning model
-        val lr = new LinearRegression().setFeaturesCol("features").setLabelCol("ArrDelay").setMaxIter(10).setElasticNetParam(0.8)
+        val lr = new LinearRegression().setFeaturesCol("scaledFeatures").setLabelCol("ArrDelay").setMaxIter(100).setElasticNetParam(0.8)
 
-        // create the pipeline
-        val pipeline_two = new Pipeline().setStages(Array(assemblerTraining, lr))
+        // create the pipeline for the linear regression
+        val pipelineRegression = new Pipeline().setStages(Array(lr))
 
         // add hyperparameter tuning
         val paramGrid = new ParamGridBuilder().addGrid(
             lr.regParam, 
             Array(
-                0.1, 0.2, 0.3, 0.4, 0.5
+                0.1, 0.2
             )
         ).build()
 
-        // add cross validation combined with hyperparameter tuning and choosing
-        val cv = new CrossValidator()
-            .setEstimator(pipeline_two)
-            .setEvaluator(
+        // add cross validation combined with hyperparameter tuning and choosing the best model
+        val cv = new CrossValidator().setEstimator(pipelineRegression).setEvaluator(
                 new RegressionEvaluator()
                 .setMetricName("rmse")
                 .setLabelCol("ArrDelay")
                 .setPredictionCol("prediction")
-            ).setEstimatorParamMaps(paramGrid)
-            .setNumFolds(5)
-            .setParallelism(2)
+            ).setEstimatorParamMaps(paramGrid).setNumFolds(5).setParallelism(2)
 
         // get the best model
-        val cvModel = cv.fit(training)
+        val cvModel = cv.fit(scaledTraining)
 
         // FOR TEST
         // try the test dataset with the best model found
-        val testTransformed = cvModel.transform(test)
+        val testTransformed = cvModel.transform(scaledTest)
 
         // create the evaluator with the r^2 metric
         val lr_evaluator = new RegressionEvaluator().setMetricName("rmse").setLabelCol("ArrDelay").setPredictionCol("prediction")
@@ -592,6 +601,45 @@ class origDestInteraction(override val uid: String) extends Transformer with col
         var usableDF = df.toDF
         if ((columnExists(usableDF, "Origin")) && (columnExists(usableDF, "Dest")))
             usableDF = usableDF.withColumn("origDestInteraction", col("Origin") * col("Dest"))
+        usableDF
+    }
+
+    override def transformSchema(schema: StructType): StructType = schema
+}
+
+class monthDayofMonthInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
+    override def copy(extra: ParamMap): monthDayofMonthInteraction = defaultCopy(extra)
+
+    def this() = this(Identifiable.randomUID("monthDayofMonthInteraction"))
+
+    def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
+
+    override def transform(df: Dataset[_]) : DataFrame = {
+        transformSchema(df.schema, logging = true)
+
+        var usableDF = df.toDF
+        if ((columnExists(usableDF, "Month")) && (columnExists(usableDF, "DayofMonth")))
+            usableDF = usableDF.withColumn("monthDayofMonthInteraction", col("Month") * col("DayofMonth"))
+        usableDF
+    }
+
+    override def transformSchema(schema: StructType): StructType = schema
+}
+
+
+class depDelayOrigInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
+    override def copy(extra: ParamMap): depDelayOrigInteraction = defaultCopy(extra)
+
+    def this() = this(Identifiable.randomUID("depDelayOrigInteraction"))
+
+    def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
+
+    override def transform(df: Dataset[_]) : DataFrame = {
+        transformSchema(df.schema, logging = true)
+
+        var usableDF = df.toDF
+        if ((columnExists(usableDF, "DepTime")) && (columnExists(usableDF, "CRSDepTime")) && (columnExists(usableDF, "Origin")))
+            usableDF = usableDF.withColumn("depDelayTaxiOutInteraction", (col("DepTime") - col("CRSDepTime")) * col("OriginOrigin"))
         usableDF
     }
 
