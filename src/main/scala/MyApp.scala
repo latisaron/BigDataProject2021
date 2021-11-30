@@ -25,32 +25,50 @@ import org.apache.spark.ml.util.Identifiable
 import org.apache.spark.ml.param.shared.HasHandleInvalid
 import scala.io.Source
 import org.apache.spark.ml.regression.{RandomForestRegressionModel, RandomForestRegressor}
+import org.apache.spark.ml.feature.PolynomialExpansion
 
 object MyApp extends remainingMethodsClass{
 
     def main(args : Array[String]) {
         Logger.getLogger("org").setLevel(Level.ERROR)
-        val conf = new SparkConf().setAppName("My first Spark application")
+        val conf = new SparkConf().setAppName("Deliverable")
         val sc = new SparkContext(conf)
             .setCheckpointDir("/tmp/checkpoints")
         val spark = SparkSession.builder()
-            .appName("Spark SQL example")
+            .appName("Big Data Proj")
             .getOrCreate()
 
         // read the input file
         val auxOutput = readInput(args, spark)
+        // the first object of the tuple is the dataframe
         var rawDF = auxOutput._1
+        // the 2nd object of the tuple is the missing/incorrect columns
         val wrongColumnsList = auxOutput._2
-        // val machineLearningAlg = auxOutput._3
-        val machineLearningAlg = "lr"
+        // the 3rd object of the tuple is the chosen machine laerning alg
+        val machineLearningAlg = auxOutput._3
+        println(machineLearningAlg)
+        val extraDatasetPath = auxOutput._4
         // throw error if not all columns are present or if file is empty
         checkIfEmpty(rawDF)        
+        // we try to remove duplicate rows so no information leaks from test to training
         rawDF = rawDF.distinct
+
+        // if there was an extra file given, try to use that information
+        if (extraDatasetPath != ""){
+            rawDF = readExtraFile(rawDF, extraDatasetPath, spark)
+            if ((columnExists(rawDF, "model")) && (columnExists(rawDF, "engine_type"))){
+                rawDF = rawDF.na.fill(0, Seq("model"))
+                rawDF = rawDF.na.fill(0, Seq("engine_type"))
+            }
+        }
+        
         val dropperTransformer = new dropper().setHandleInvalid("skip") // drop all forbidden/useless columns
         dropperTransformer.wrongColumnsList = wrongColumnsList // adding the columns that really should be removed
         val emptyColumnsAndFieldsTransformer = new emptyColumnsAndFields().setHandleInvalid("skip") // get all string columns && remove all remaining null fields OR drop column with too many NAs
         val formattedDateTransformer = new formattedDate().setHandleInvalid("skip")  // add column for further analysis (proximityToHolidayTransformer   )
         val stringTypesToIntTransformer = new stringTypesToInt().setHandleInvalid("skip") // cast possible string columns to integer
+        val stringHoursToIntTransformer = new stringHoursToInt().setHandleInvalid("skip") // cast the CRSDepTime to int using magic formula
+        val modelEngineTypeTransformer = new modelEngineType().setHandleInvalid("skip")
         val countriesAndCarriersAndFlightNumToNumbersTransformer = new countriesAndCarriersAndFlightNumToNumbers().setHandleInvalid("skip") // here we collect all the countries/carrierCodes present in origin/dest/codes & change strings to numbers
         val proximityToHolidayTransformer = new proximityToHoliday().setHandleInvalid("skip") // here we compute the US holiday/event list for those Year values (holidayCalendar class defined below)
         var pipelineStages : Array[Transformer] = Array(
@@ -58,17 +76,25 @@ object MyApp extends remainingMethodsClass{
             emptyColumnsAndFieldsTransformer,
             formattedDateTransformer,
             stringTypesToIntTransformer,
+            stringHoursToIntTransformer,
+            modelEngineTypeTransformer,
             countriesAndCarriersAndFlightNumToNumbersTransformer,
             proximityToHolidayTransformer
         )
 
-        // if (machineLearningAlg.toLowerCase == "lr"){
-        //     val depDelayTaxiOutInteractionTransformer = new depDelayTaxiOutInteraction().setHandleInvalid("skip") // create intraction variable between old DepDelay and TaxiOut
-        //     val origDestInteractionTransformer = new origDestInteraction().setHandleInvalid("skip") // create intraction variable between Origin and Dest
-        //     val monthDayofMonthInteractionTransformer = new  monthDayofMonthInteraction().setHandleInvalid("skip") // create interaction variable between Month and DayofMonth
-        //     val depDelayOrigInteractionTransformer = new depDelayOrigInteraction().setHandleInvalid("skip")
-        //     val depDelayCRSArrTimegInteractionTransformer = new depDelayCRSArrTimegInteraction().setHandleInvalid("skip")
-        // }
+        // if the machine learning alg is lr then we also add interaction variables 
+        if (machineLearningAlg.toLowerCase == "lr"){
+            val depDelayTaxiOutInteractionTransformer = new depDelayTaxiOutInteraction().setHandleInvalid("skip") // create intraction variable between old DepDelay and TaxiOut
+            pipelineStages = pipelineStages :+ depDelayTaxiOutInteractionTransformer
+            val origDestInteractionTransformer = new origDestInteraction().setHandleInvalid("skip") // create intraction variable between Origin and Dest
+            pipelineStages = pipelineStages :+ origDestInteractionTransformer
+            val monthDayofMonthInteractionTransformer = new  monthDayofMonthInteraction().setHandleInvalid("skip") // create interaction variable between Month and DayofMonth
+            pipelineStages = pipelineStages :+ monthDayofMonthInteractionTransformer
+            val depDelayOrigInteractionTransformer = new depDelayOrigInteraction().setHandleInvalid("skip")
+            pipelineStages = pipelineStages :+ depDelayOrigInteractionTransformer
+            val depDelayCRSDepTimeInteractionTransformer = new depDelayCRSDepTimeInteraction().setHandleInvalid("skip")
+            pipelineStages = pipelineStages :+ depDelayCRSDepTimeInteractionTransformer
+        }
 
         val dropRemainingStringTransformer = new dropRemainingString() // just drop anything that was not succesfully converted to Int
         pipelineStages = pipelineStages :+ dropRemainingStringTransformer
@@ -81,11 +107,16 @@ object MyApp extends remainingMethodsClass{
         // get column names that are not ArrDelay
         var variableNames = intermediaryDF.columns.filter(_ != "ArrDelay")
 
+        // if the machine learning alg is lr then we add 2nd degree terms to also model nonlinearity
         if (machineLearningAlg == "lr")
-            for (colName <- variableNames   ){
-                var new_name = colName + "Squared"
-                intermediaryDF = intermediaryDF.withColumn(new_name, col(colName) * col(colName))
+            for (colName <- variableNames){
+                if (!(colName.toLowerCase contains "interaction")){
+                    var new_name = colName + "Squared"
+                    intermediaryDF = intermediaryDF.withColumn(new_name, col(colName) * col(colName))
+                }
             }
+        // get new column names
+        variableNames = intermediaryDF.columns.filter(_ != "ArrDelay")
 
         // create the assembler that's gonna add the features column
         val generalAssembler = new VectorAssembler().setInputCols(variableNames).setOutputCol("features").setHandleInvalid("skip")
@@ -94,6 +125,7 @@ object MyApp extends remainingMethodsClass{
         // creating the new DF
         val pipelineAssemblerRes = pipelineAssembler.fit(intermediaryDF)
         val featuresDF = pipelineAssemblerRes.transform(intermediaryDF)
+
         // split the data
         val splitData = featuresDF.randomSplit(Array(0.8, 0.2))
 
@@ -145,17 +177,20 @@ trait columnExisting{
 
 class remainingMethodsClass extends columnExisting{
 
-    def readInput(args: Array[String], spark: SparkSession) : (DataFrame, Array[String], String) = {
+    def readInput(args: Array[String], spark: SparkSession) : (DataFrame, Array[String], String, String) = {
         // RULE: everything that is not CRScheduled is String.
         if (args.length >= 1) {
             if (args(0).takeRight(4) != ".csv") {
                 throw new Exception("File format is not supported. Please use .csv")
             }
-            val sourceFile = Source.fromFile(args(0))
+            // first we only read the headers to see what the order of the columns is
+            // we also check for wrong names or just missing columns
+            val sourceFile = Source.fromFile(args(0)) 
             val headerLine = sourceFile.getLines.take(1).toArray
             sourceFile.close
             val headersRaw = headerLine(0).split(",")
             val headersFinal = headersRaw.map(_.replaceAll("\\W", ""))
+            // this is the hash containing what the names should be and their associated type
             val columnTypesHash = Map(
                 ("Year", IntegerType),
                 ("Month", IntegerType),
@@ -188,7 +223,9 @@ class remainingMethodsClass extends columnExisting{
                 ("LateAircraftDelay", StringType)
             )
             val correctColumnNamesList = columnTypesHash.keys.toArray
-            var schemaArray : Array[StructField] = Array()
+            // the schemaArray object will be used to impose a schema array when reading the actual data
+            var schemaArray : Array[StructField] = Array() 
+            // the wrongColumnArray object will be used to know what columns to drop after having imposed the schema
             var wrongColumnArray : Array[String] = Array()
             for ( columnName <- headersFinal){
                 if (correctColumnNamesList.contains(columnName))
@@ -201,20 +238,71 @@ class remainingMethodsClass extends columnExisting{
             }
             val genericSchema = StructType(schemaArray)
             var machineLearningAlg = ""
-            var extraDataset = ""
+            var extraDatasetPath = ""
             if (args.length >= 2){
                 machineLearningAlg = args(1)
+                if (args.length >= 3){
+                    extraDatasetPath = args(2)
+                }
             }
-            return (spark.read.schema(genericSchema).options(Map("header"->"true")).csv(args(0)), wrongColumnArray, machineLearningAlg)
+            return (spark.read.schema(genericSchema).options(Map("header"->"true")).csv(args(0)), wrongColumnArray, machineLearningAlg, extraDatasetPath)
         } 
         else {
             throw new Exception("locaiton of the input file is missing or incorrect")
         }
     }
 
+    // reads extra file if necessary
+    def readExtraFile( df : DataFrame, input_path : String, spark: SparkSession) : DataFrame = {
+        var usableDF = df
+        try{
+            if (input_path.takeRight(4) != ".csv") {
+                throw new Exception("File format is not supported. Please use .csv")
+            }
+            val sourceFile = Source.fromFile(input_path) 
+            val headerLine = sourceFile.getLines.take(1).toArray
+            sourceFile.close
+            val headersRaw = headerLine(0).split(",")
+            val headersFinal = headersRaw.map(_.replaceAll("\\W", ""))
+
+            val correctHeaders = Array("tailnum", "type", "manufacturer", "issue_date", "model", "status", "aircraft_type", "engine_type", "year")
+            var index = 0
+            for (currentHeaders <- correctHeaders){
+                if (currentHeaders != headersFinal(index))
+                    throw new Exception("Something wrong with the column names. It's not like the original, so the new columns won't be used.")
+                index += 1
+            }
+            val secondarySchema = Array(
+                StructField("tailnum", StringType, true),
+                StructField("type", StringType, true),
+                StructField("manufacturer", StringType, true),
+                StructField("issue_date", StringType, true),
+                StructField("model", StringType, true),
+                StructField("status", StringType, true),
+                StructField("aircraft_type", StringType, true),
+                StructField("engine_type", StringType, true),
+                StructField("year", StringType, true)
+            )
+            val extraDataset = spark.read.schema(StructType(secondarySchema)).options(Map("header"->"true")).csv(input_path)
+            val onlyPlaneInfoDF = extraDataset.select(
+                    col("tailnum"), 
+                    col("model"), 
+                    col("engine_type")
+                ).filter((!col("model").isNull) && (!col("engine_type").isNull))
+            onlyPlaneInfoDF.first
+            // joins the original dataframe with the new one in case the file is good.
+            usableDF = usableDF.join(onlyPlaneInfoDF, usableDF("TailNum") === onlyPlaneInfoDF("tailnum")).drop("tailnum")
+        } catch {
+            case e: Exception =>
+                    println("The extra dataset was not exactly the same as the one online. Therefore extra variables won't be added.")
+        }
+        return usableDF
+    }
+
     // checks to make sure the input is good :) 
     def checkIfEmpty( df : DataFrame ) : Boolean = {
         try {
+            // if this call doesn't work means the file is empty so it's useless
             df.first
         }catch{ 
             case e: java.util.NoSuchElementException =>
@@ -223,9 +311,11 @@ class remainingMethodsClass extends columnExisting{
         return true
     }
 
+    // this function has been created to centralize the creation of the CrossValidator
+    // depending on the chosen learning algorithm
     def createMLModel( chosenAlgorithm : String ) : CrossValidator = {
         if (chosenAlgorithm.toLowerCase == "lr") {
-            val algorithm = new LinearRegression().setFeaturesCol("features").setLabelCol("ArrDelay").setMaxIter(1000).setElasticNetParam(1)
+            val algorithm = new LinearRegression().setFeaturesCol("features").setLabelCol("ArrDelay").setMaxIter(1000)
             val paramGrid = new ParamGridBuilder()
             .addGrid(
                 algorithm.regParam, 
@@ -248,12 +338,16 @@ class remainingMethodsClass extends columnExisting{
                 ).setEstimatorParamMaps(paramGrid).setNumFolds(3).setParallelism(2)
             return cv
         } else {//if (chosenAlgorithm.toLowerCase == "rf") {
-            val algorithm = new RandomForestRegressor().setLabelCol("ArrDelay").setFeaturesCol("scaledFeatures").setNumTrees(11).setMaxDepth(11).setFeatureSubsetStrategy("auto").setImpurity("variance").setMaxBins(100)
+            val algorithm = new RandomForestRegressor().setLabelCol("ArrDelay").setFeaturesCol("scaledFeatures").setFeatureSubsetStrategy("auto").setImpurity("variance").setMaxBins(100)
             val paramGrid = new ParamGridBuilder()
             .addGrid(
                 algorithm.maxDepth, 
                 Array(
-                    10,12
+                    7, 9, 11
+                )).addGrid(
+                algorithm.numTrees,
+                Array(
+                    7, 9, 11
                 )
             ).build()
             val pipelineRegression = new Pipeline().setStages(Array(algorithm))
@@ -263,7 +357,7 @@ class remainingMethodsClass extends columnExisting{
                     .setMetricName("rmse")
                     .setLabelCol("ArrDelay")
                     .setPredictionCol("prediction")
-                ).setEstimatorParamMaps(paramGrid).setNumFolds(5).setParallelism(2)
+                ).setEstimatorParamMaps(paramGrid).setNumFolds(3).setParallelism(2)
             return cv
         } 
     }
@@ -344,7 +438,7 @@ class dropper(override val uid: String) extends Transformer with HasHandleInvali
         // try to drop columns
         val featuresToBeDropped = Array(
             "ArrTime", "ActualElapsedTime", "AirTime", "Diverted", "CarrierDelay", "WeatherDelay", "NASDelay", "SecurityDelay", "LateAircraftDelay", "TaxiIn", // find then drop the forbidden columns
-            "TailNum",    // also drop the TailNum column given that it's an ID and it's not useful for the model
+            "TailNum",    // also drop the TailNum column given that it's an ID and it's not useful for 
             "Cancelled", "CancellationCode" // these are also useless after we deleted rows with missing data
         )
         val usableDF = noCancelColumnDF.drop(featuresToBeDropped: _*)
@@ -470,7 +564,7 @@ class stringHoursToInt(override val uid: String) extends Transformer with column
             ).map(_.name)
 
         
-        val stringTimeTypes = Array("DepTime", "CRSDepTime", "CRSArrTime")
+        val stringTimeTypes = Array("CRSDepTime")
         var usableDF = df.toDF
         for ( columnName <- stringTimeTypes ){
             if (columnExists(usableDF, columnName))
@@ -507,6 +601,7 @@ class countriesAndCarriersAndFlightNumToNumbers(override val uid: String) extend
             val destKeys = usableDF.select(col("Dest")).distinct.collect.flatMap(_.toSeq).map(_.toString)
             val airportKeys = (origKeys ++ destKeys).distinct
             usableDF = usableDF.withColumn("Origin", createConversionUDF(airportKeys)(col("Origin")))
+            usableDF = usableDF.withColumn("Dest", createConversionUDF(airportKeys)(col("Dest")))
         } else if (columnExists(usableDF, "Dest")){
         val destKeys = usableDF.select(col("Dest")).distinct.collect.flatMap(_.toSeq).map(_.toString)
         usableDF = usableDF.withColumn("Dest", createConversionUDF(destKeys)(col("Dest")))
@@ -601,15 +696,15 @@ class depDelayTaxiOutInteraction(override val uid: String) extends Transformer w
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
-        if ((columnExists(usableDF, "DepTime")) && (columnExists(usableDF, "CRSDepTime")) && (columnExists(usableDF, "TaxiOut")))
-            usableDF = usableDF.withColumn("depDelayTaxiOutInteraction", (col("DepTime") - col("CRSDepTime")) * col("TaxiOut"))
+        if ((columnExists(usableDF, "DepDelay")) && (columnExists(usableDF, "TaxiOut")))
+            usableDF = usableDF.withColumn("depDelayTaxiOutInteraction", (col("DepDelay") * col("TaxiOut")))
         usableDF
     }
 
     override def transformSchema(schema: StructType): StructType = schema
 } 
 
-// added an interaction variable between Origin and Dest after multivariate analysis
+// added an interaction variable between Origin and Dest
 class origDestInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
     override def copy(extra: ParamMap): origDestInteraction = defaultCopy(extra)
 
@@ -629,6 +724,7 @@ class origDestInteraction(override val uid: String) extends Transformer with col
     override def transformSchema(schema: StructType): StructType = schema
 }
 
+// added an interaction variable between Month and DayofMonth
 class monthDayofMonthInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
     override def copy(extra: ParamMap): monthDayofMonthInteraction = defaultCopy(extra)
 
@@ -648,6 +744,7 @@ class monthDayofMonthInteraction(override val uid: String) extends Transformer w
     override def transformSchema(schema: StructType): StructType = schema
 }
 
+// added an interaction variable between DepDelay and Origin
 class depDelayOrigInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
     override def copy(extra: ParamMap): depDelayOrigInteraction = defaultCopy(extra)
 
@@ -659,19 +756,19 @@ class depDelayOrigInteraction(override val uid: String) extends Transformer with
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
-        if ((columnExists(usableDF, "DepTime")) && (columnExists(usableDF, "CRSDepTime")) && (columnExists(usableDF, "Origin")))
-            usableDF = usableDF.withColumn("depDelayOrigInteraction", (col("DepTime") - col("CRSDepTime")) * col("Origin"))
+        if ((columnExists(usableDF, "DepDelay")) && (columnExists(usableDF, "Origin")))
+            usableDF = usableDF.withColumn("depDelayOrigInteraction", (col("DepDelay") * col("Origin")))
         usableDF
     }
 
     override def transformSchema(schema: StructType): StructType = schema
 }
 
+// added an interaction variable between DepDelay and CRSArrTime
+class depDelayCRSDepTimeInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
+    override def copy(extra: ParamMap): depDelayCRSDepTimeInteraction = defaultCopy(extra)
 
-class depDelayCRSArrTimegInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
-    override def copy(extra: ParamMap): depDelayCRSArrTimegInteraction = defaultCopy(extra)
-
-    def this() = this(Identifiable.randomUID("depDelayCRSArrTimegInteraction"))
+    def this() = this(Identifiable.randomUID("depDelayCRSDepTimeInteraction"))
 
     def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
 
@@ -679,8 +776,8 @@ class depDelayCRSArrTimegInteraction(override val uid: String) extends Transform
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
-        if ((columnExists(usableDF, "DepTime")) && (columnExists(usableDF, "CRSDepTime")) && (columnExists(usableDF, "Origin")))
-            usableDF = usableDF.withColumn("depDelayCRSArrTimegInteraction", (col("DepTime") * col("CRSArrTime")))
+        if ((columnExists(usableDF, "DepTime")) && (columnExists(usableDF, "CRSDepTime")))
+            usableDF = usableDF.withColumn("depDelayCRSDepTimeInteraction", (col("DepDelay") * col("CRSDepTime")))
         usableDF
     }
 
@@ -702,6 +799,40 @@ class dropRemainingString(override val uid: String) extends Transformer{
             ).map(_.name)
         for (columnName <- possibleEmptyColumns){
             usableDF = usableDF.drop(columnName)
+        }
+        usableDF
+    }
+
+    override def transformSchema(schema: StructType): StructType = schema
+}
+
+class modelEngineType(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
+    override def copy(extra: ParamMap): modelEngineType = defaultCopy(extra)
+
+    def this() = this(Identifiable.randomUID("modelEngineType"))
+
+    def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
+
+    def convertWordsToNumbers(element : String, hash : Array[String]) : Int = {
+        hash.indexOf(element)
+    }
+
+    def createConversionUDF(hash : Array[String]) : org.apache.spark.sql.expressions.UserDefinedFunction = {
+        return udf{element : String => convertWordsToNumbers(element, hash)}
+    }
+
+    override def transform(df: Dataset[_]) : DataFrame = {
+        transformSchema(df.schema, logging = true)
+
+        var usableDF = df.toDF
+        if (columnExists(usableDF, "model")){
+        val companiesKeys = usableDF.select(col("model")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+        usableDF = usableDF.withColumn("model", createConversionUDF(companiesKeys)(col("model")))
+        }
+
+        if (columnExists(usableDF, "engine_type")){
+        val flightNumKeys = usableDF.select(col("engine_type")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+        usableDF = usableDF.withColumn("engine_type", createConversionUDF(flightNumKeys)(col("engine_type")))
         }
         usableDF
     }

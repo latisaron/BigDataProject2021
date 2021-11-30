@@ -1,9 +1,4 @@
-[0m[[0m[31merror[0m] [0m[0mC:\Users\User\Desktop\UPM_2021_2022\SEMESTER_1\BIG_DATA\course_6\sparkapp\src\main\scala\MyApp.scala:114:32: type mismatch;[0m
-[0m[[0m[31merror[0m] [0m[0m found   : Boolean[0m
-[0m[[0m[31merror[0m] [0m[0m required: String[0m
-[0m[[0m[31merror[0m] [0m[0m        val cv = createMLModel(machineLearningAlg)[0m
+[0m[[0m[31merror[0m] [0m[0mC:\Users\User\Desktop\UPM_2021_2022\SEMESTER_1\BIG_DATA\course_6\sparkapp\src\main\scala\MyApp.scala:273:32: not found: value spark[0m
+[0m[[0m[31merror[0m] [0m[0m            val extraDataset = spark.read.schema(StructType(secondarySchema)).options(Map("header"->"true")).csv(input_path)[0m
 [0m[[0m[31merror[0m] [0m[0m                               ^[0m
-[0m[[0m[31merror[0m] [0m[0mC:\Users\User\Desktop\UPM_2021_2022\SEMESTER_1\BIG_DATA\course_6\sparkapp\src\main\scala\MyApp.scala:235:42: org.apache.spark.ml.param.DoubleParam does not take parameters[0m
-[0m[[0m[31merror[0m] [0m[0m                algorithm.elasticNetParam([0m
-[0m[[0m[31merror[0m] [0m[0m                                         ^[0m
-[0m[[0m[31merror[0m] [0m[0mtwo errors found[0m
+[0m[[0m[31merror[0m] [0m[0mone error found[0m
