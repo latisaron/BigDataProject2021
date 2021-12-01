@@ -1,4 +1,4 @@
-[0m[[0m[31merror[0m] [0m[0mC:\Users\User\Desktop\UPM_2021_2022\SEMESTER_1\BIG_DATA\course_6\sparkapp\src\main\scala\MyApp.scala:273:32: not found: value spark[0m
-[0m[[0m[31merror[0m] [0m[0m            val extraDataset = spark.read.schema(StructType(secondarySchema)).options(Map("header"->"true")).csv(input_path)[0m
-[0m[[0m[31merror[0m] [0m[0m                               ^[0m
+[0m[[0m[31merror[0m] [0m[0mC:\Users\User\Desktop\UPM_2021_2022\SEMESTER_1\BIG_DATA\course_6\sparkapp\src\main\scala\MyApp.scala:324:37: Double does not take parameters[0m
+[0m[[0m[31merror[0m] [0m[0m            println(algorithm.getTol())[0m
+[0m[[0m[31merror[0m] [0m[0m                                    ^[0m
 [0m[[0m[31merror[0m] [0m[0mone error found[0m

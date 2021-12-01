@@ -313,7 +313,14 @@ class remainingMethodsClass extends columnExisting{
     // depending on the chosen learning algorithm
     def createMLModel( chosenAlgorithm : String ) : CrossValidator = {
         if (chosenAlgorithm.toLowerCase == "lr") {
-            val algorithm = new LinearRegression().setFeaturesCol("scaledFeatures").setLabelCol("ArrDelay").setMaxIter(1000)
+            val algorithm = new LinearRegression()
+                .setFeaturesCol("scaledFeatures")
+                .setLabelCol("ArrDelay")
+                .setMaxIter(1000)
+                .setFitIntercept(true)
+                .setLoss("squaredError")
+                .setSolver("auto")
+                .setStandardization(false)
             val paramGrid = new ParamGridBuilder()
             .addGrid(
                 algorithm.regParam, 
@@ -326,17 +333,27 @@ class remainingMethodsClass extends columnExisting{
                     0.5, 0.8, 1
                 )
             ).build()
-            val pipelineRegression = new Pipeline().setStages(Array(algorithm))
+            val pipelineRegression = new Pipeline()
+                .setStages(Array(algorithm))
         // add cross validation combined with hyperparameter tuning and choosing the best model
-            val cv = new CrossValidator().setEstimator(pipelineRegression).setEvaluator(
+            val cv = new CrossValidator()
+                .setEstimator(pipelineRegression)
+                .setEvaluator(
                     new RegressionEvaluator()
                     .setMetricName("rmse")
                     .setLabelCol("ArrDelay")
                     .setPredictionCol("prediction")
-                ).setEstimatorParamMaps(paramGrid).setNumFolds(3).setParallelism(2)
+                ).setEstimatorParamMaps(paramGrid)
+                .setNumFolds(3)
+                .setParallelism(2)
             return cv
         } else {//if (chosenAlgorithm.toLowerCase == "rf") {
-            val algorithm = new RandomForestRegressor().setLabelCol("ArrDelay").setFeaturesCol("scaledFeatures").setFeatureSubsetStrategy("auto").setImpurity("variance").setMaxBins(100)
+            val algorithm = new RandomForestRegressor()
+                .setLabelCol("ArrDelay")
+                .setFeaturesCol("scaledFeatures")
+                .setFeatureSubsetStrategy("auto")
+                .setImpurity("variance")
+                .setMaxBins(100)
             val paramGrid = new ParamGridBuilder()
             .addGrid(
                 algorithm.maxDepth, 
@@ -350,12 +367,16 @@ class remainingMethodsClass extends columnExisting{
             ).build()
             val pipelineRegression = new Pipeline().setStages(Array(algorithm))
             // add cross validation combined with hyperparameter tuning and choosing the best model
-            val cv = new CrossValidator().setEstimator(pipelineRegression).setEvaluator(
+            val cv = new CrossValidator()
+                .setEstimator(pipelineRegression)
+                .setEvaluator(
                     new RegressionEvaluator()
                     .setMetricName("rmse")
                     .setLabelCol("ArrDelay")
                     .setPredictionCol("prediction")
-                ).setEstimatorParamMaps(paramGrid).setNumFolds(3).setParallelism(2)
+                ).setEstimatorParamMaps(paramGrid)
+                .setNumFolds(3)
+                .setParallelism(2)
             return cv
         } 
     }
@@ -854,14 +875,14 @@ class modelEngineType(override val uid: String) extends Transformer with columnE
         var usableDF = df.toDF
         if (columnExists(usableDF, "model")){
         // get a map containing all keys mapped to their location and use that to cast strings to integer
-        val modelKeys = usableDF.select(col("model")).distinct.collect.flatMap(_.toSeq).map(_.toString)
-        usableDF = usableDF.withColumn("model", createConversionUDF(modelKeys)(col("model")))
+            val modelKeys = usableDF.select(col("model")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+            usableDF = usableDF.withColumn("model", createConversionUDF(modelKeys)(col("model")))
         }
 
         if (columnExists(usableDF, "engine_type")){
         // get a map containing all keys mapped to their location and use that to cast strings to integer            
-        val engineKeys = usableDF.select(col("engine_type")).distinct.collect.flatMap(_.toSeq).map(_.toString)
-        usableDF = usableDF.withColumn("engine_type", createConversionUDF(engineKeys)(col("engine_type")))
+            val engineKeys = usableDF.select(col("engine_type")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+            usableDF = usableDF.withColumn("engine_type", createConversionUDF(engineKeys)(col("engine_type")))
         }
         usableDF
     }

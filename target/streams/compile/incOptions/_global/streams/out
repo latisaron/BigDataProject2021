@@ -4,10 +4,13 @@
 [0m[[0m[0mdebug[0m] [0m[0m	depDelayOrigInteraction.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	remainingMethodsClass.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	countriesAndCarriersAndFlightNumToNumbers.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	addSecondDegreeTerms.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	stringHoursToInt.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	addSquaredTerms$$typecreator1$5.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	dropRemainingString.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	formattedDate.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	depDelayTaxiOutInteraction.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	addSquaredTerms$$typecreator2$1.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	countriesAndCarriersAndFlightNumToNumbers$$typecreator1$2.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	origDestInteraction.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	depDelayCRSDepTimeInteraction.class[0m
@@ -19,6 +22,7 @@
 [0m[[0m[0mdebug[0m] [0m[0m	modelEngineType.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	emptyColumnsAndFields.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	columnExisting.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	addSquaredTerms.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	monthDayofMonthInteraction.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	MyApp.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	stringTypesToInt.class[0m
@@ -28,10 +32,13 @@
 [0m[[0m[0mdebug[0m] [0m[0m	depDelayOrigInteraction.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	remainingMethodsClass.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	countriesAndCarriersAndFlightNumToNumbers.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	addSecondDegreeTerms.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	stringHoursToInt.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	addSquaredTerms$$typecreator1$5.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	dropRemainingString.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	formattedDate.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	depDelayTaxiOutInteraction.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	addSquaredTerms$$typecreator2$1.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	countriesAndCarriersAndFlightNumToNumbers$$typecreator1$2.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	origDestInteraction.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	depDelayCRSDepTimeInteraction.class[0m
@@ -43,6 +50,7 @@
 [0m[[0m[0mdebug[0m] [0m[0m	modelEngineType.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	emptyColumnsAndFields.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	columnExisting.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	addSquaredTerms.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	monthDayofMonthInteraction.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	MyApp.class[0m
 [0m[[0m[0mdebug[0m] [0m[0m	stringTypesToInt.class[0m
