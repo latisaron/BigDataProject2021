@@ -25,7 +25,7 @@ import org.apache.spark.ml.util.Identifiable
 import org.apache.spark.ml.param.shared.HasHandleInvalid
 import scala.io.Source
 import org.apache.spark.ml.regression.{RandomForestRegressionModel, RandomForestRegressor}
-import org.apache.spark.ml.feature.PolynomialExpansion
+import org.apache.spark.ml.linalg.{Vector, Vectors}
 
 object MyApp extends remainingMethodsClass{
 
@@ -68,7 +68,7 @@ object MyApp extends remainingMethodsClass{
         val formattedDateTransformer = new formattedDate().setHandleInvalid("skip")  // add column for further analysis (proximityToHolidayTransformer   )
         val stringTypesToIntTransformer = new stringTypesToInt().setHandleInvalid("skip") // cast possible string columns to integer
         val stringHoursToIntTransformer = new stringHoursToInt().setHandleInvalid("skip") // cast the CRSDepTime to int using magic formula
-        val modelEngineTypeTransformer = new modelEngineType().setHandleInvalid("skip")
+        val modelEngineTypeTransformer = new modelEngineType().setHandleInvalid("skip") // change strings to numbers for discrete values for those 2 columns
         val countriesAndCarriersAndFlightNumToNumbersTransformer = new countriesAndCarriersAndFlightNumToNumbers().setHandleInvalid("skip") // here we collect all the countries/carrierCodes present in origin/dest/codes & change strings to numbers
         val proximityToHolidayTransformer = new proximityToHoliday().setHandleInvalid("skip") // here we compute the US holiday/event list for those Year values (holidayCalendar class defined below)
         var pipelineStages : Array[Transformer] = Array(
@@ -95,9 +95,9 @@ object MyApp extends remainingMethodsClass{
             val depDelayCRSDepTimeInteractionTransformer = new depDelayCRSDepTimeInteraction().setHandleInvalid("skip")
             pipelineStages = pipelineStages :+ depDelayCRSDepTimeInteractionTransformer
         }
-
         val dropRemainingStringTransformer = new dropRemainingString() // just drop anything that was not succesfully converted to Int
         pipelineStages = pipelineStages :+ dropRemainingStringTransformer
+
         val pipelineTransformers = new Pipeline().setStages(
             pipelineStages
         )
@@ -106,18 +106,6 @@ object MyApp extends remainingMethodsClass{
         var intermediaryDF = intermediaryPipeline.transform(rawDF)
         // get column names that are not ArrDelay
         var variableNames = intermediaryDF.columns.filter(_ != "ArrDelay")
-
-        // if the machine learning alg is lr then we add 2nd degree terms to also model nonlinearity
-        if (machineLearningAlg == "lr")
-            for (colName <- variableNames){
-                if (!(colName.toLowerCase contains "interaction")){
-                    var new_name = colName + "Squared"
-                    intermediaryDF = intermediaryDF.withColumn(new_name, col(colName) * col(colName))
-                }
-            }
-        // get new column names
-        variableNames = intermediaryDF.columns.filter(_ != "ArrDelay")
-
         // create the assembler that's gonna add the features column
         val generalAssembler = new VectorAssembler().setInputCols(variableNames).setOutputCol("features").setHandleInvalid("skip")
         // create the pipeline that's gonna use the assembler
@@ -141,8 +129,18 @@ object MyApp extends remainingMethodsClass{
         // get the scaler model
         val scalerModel = pipelineScaler.fit(training)
         // use the same scaler model to transform both test and training so no info is leaked from test to train
-        val scaledTraining = scalerModel.transform(training)
-        val scaledTest = scalerModel.transform(test)
+        var scaledTraining = scalerModel.transform(training)
+        var scaledTest = scalerModel.transform(test)
+
+        if (machineLearningAlg == "lr"){
+            val addSquaredTermsTransformer = new addSquaredTerms().setHandleInvalid("skip")
+            val polynomialPipeline = new Pipeline().setStages(Array(addSquaredTermsTransformer))
+            
+            val polynomialPipelineTraining = polynomialPipeline.fit(scaledTraining)
+            scaledTraining = polynomialPipelineTraining.transform(scaledTraining)
+            val polynomialPipelineTest = polynomialPipeline.fit(scaledTest)
+            scaledTest = polynomialPipelineTest.transform(scaledTest)
+        }
 
         val cv = createMLModel(machineLearningAlg)
 
@@ -315,7 +313,7 @@ class remainingMethodsClass extends columnExisting{
     // depending on the chosen learning algorithm
     def createMLModel( chosenAlgorithm : String ) : CrossValidator = {
         if (chosenAlgorithm.toLowerCase == "lr") {
-            val algorithm = new LinearRegression().setFeaturesCol("features").setLabelCol("ArrDelay").setMaxIter(1000)
+            val algorithm = new LinearRegression().setFeaturesCol("scaledFeatures").setLabelCol("ArrDelay").setMaxIter(1000)
             val paramGrid = new ParamGridBuilder()
             .addGrid(
                 algorithm.regParam, 
@@ -438,7 +436,8 @@ class dropper(override val uid: String) extends Transformer with HasHandleInvali
         // try to drop columns
         val featuresToBeDropped = Array(
             "ArrTime", "ActualElapsedTime", "AirTime", "Diverted", "CarrierDelay", "WeatherDelay", "NASDelay", "SecurityDelay", "LateAircraftDelay", "TaxiIn", // find then drop the forbidden columns
-            "TailNum",    // also drop the TailNum column given that it's an ID and it's not useful for 
+            "TailNum",    // also drop the TailNum column given that it's an ID and it's not useful forE
+            "CRSArrTime", "DepTime", // drop because they're all in different timezones + we have CRSElapsedTime and DepDelay
             "Cancelled", "CancellationCode" // these are also useless after we deleted rows with missing data
         )
         val usableDF = noCancelColumnDF.drop(featuresToBeDropped: _*)
@@ -465,6 +464,8 @@ class emptyColumnsAndFields(override val uid: String) extends Transformer with H
             val countNULL = usableDF.filter(col(columnName).isNull).count
             val countTotal = usableDF.select(col(columnName)).count
 
+            // if there are too many nulls/NA then the column is dropped in favor or retaining as many rows as possible - 30%
+            // if there are less than 30% missing values, we just drop those rows.
             if (usableDF.schema(columnName).dataType == org.apache.spark.sql.types.StringType)
                 if (countNA/countTotal.toFloat >= 0.3)
                     usableDF = usableDF.drop(columnName)
@@ -526,6 +527,7 @@ class stringTypesToInt(override val uid: String) extends Transformer with column
         
         val shouldBeIntTypes = Array("ArrDelay", "TaxiOut", "DepDelay")
         var usableDF = df.toDF
+        // converts string columns to integers
         for ( columnName <- shouldBeIntTypes ){
             if (columnExists(usableDF, columnName))
             usableDF = usableDF.withColumn(columnName, col(columnName).cast("integer"))
@@ -544,6 +546,7 @@ class stringHoursToInt(override val uid: String) extends Transformer with column
 
     def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
 
+    // udf that converts the hour into an integer using a simple formula
     def convertStringTimeUDF() : org.apache.spark.sql.expressions.UserDefinedFunction = {
         return udf( (s : String) => {
             try{
@@ -557,15 +560,11 @@ class stringHoursToInt(override val uid: String) extends Transformer with column
 
     override def transform(df: Dataset[_]) : DataFrame = {
         transformSchema(df.schema, logging = true)
-
-        val possibleEmptyColumns = df.
-            schema.fields.filter(
-                x => x.dataType == org.apache.spark.sql.types.StringType
-            ).map(_.name)
-
         
         val stringTimeTypes = Array("CRSDepTime")
         var usableDF = df.toDF
+        // just convert hour string columns to integers
+        // the for is there in case we want to add extra hour string columns to be casted :D
         for ( columnName <- stringTimeTypes ){
             if (columnExists(usableDF, columnName))
                 usableDF = usableDF.withColumn(columnName, convertStringTimeUDF()(col(columnName)))
@@ -584,10 +583,12 @@ class countriesAndCarriersAndFlightNumToNumbers(override val uid: String) extend
 
     def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
 
+    // function to be called inside udf
     def convertWordsToNumbers(element : String, hash : Array[String]) : Int = {
         hash.indexOf(element)
     }
 
+    // function that returns a udf so we can call function with input params
     def createConversionUDF(hash : Array[String]) : org.apache.spark.sql.expressions.UserDefinedFunction = {
         return udf{element : String => convertWordsToNumbers(element, hash)}
     }
@@ -596,17 +597,24 @@ class countriesAndCarriersAndFlightNumToNumbers(override val uid: String) extend
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
+        // check if origin/dest both exist and then change strings to ints
         if (columnExists(usableDF, "Origin") && (columnExists(usableDF, "Dest"))){
+            // get origin present airports
             val origKeys = usableDF.select(col("Origin")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+            // get dest present airports
             val destKeys = usableDF.select(col("Dest")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+            // do a union between them because we want the same point of reference
             val airportKeys = (origKeys ++ destKeys).distinct
+            // change the strings to ints using a (dictionary) map
             usableDF = usableDF.withColumn("Origin", createConversionUDF(airportKeys)(col("Origin")))
             usableDF = usableDF.withColumn("Dest", createConversionUDF(airportKeys)(col("Dest")))
         } else if (columnExists(usableDF, "Dest")){
         val destKeys = usableDF.select(col("Dest")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+        // change the strings to ints using a (dictionary) map
         usableDF = usableDF.withColumn("Dest", createConversionUDF(destKeys)(col("Dest")))
         } else if (columnExists(usableDF, "Origin")){
         val origKeys = usableDF.select(col("Origin")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+        // change the strings to ints using a (dictionary) map
         usableDF = usableDF.withColumn("Origin", createConversionUDF(origKeys)(col("Origin")))
         }
 
@@ -633,10 +641,12 @@ class proximityToHoliday(override val uid: String) extends Transformer with colu
 
     def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
 
+    // function to be called in the UDF
     def proximityToHoliday( element : String, holidays : Array[LocalDate]) : Int = {
         val format = DateTimeFormatter.ofPattern("d-M-y")
         val localDate = LocalDate.parse(element, format)
         var minimum = 999.toLong
+        // find the closest holiday and find the day difference between the 2 dates and store it
         for ( holiday <- holidays ){
             val auxDiff = (DAYS.between(localDate, holiday))
             if (Math.abs(auxDiff) < minimum){
@@ -646,10 +656,12 @@ class proximityToHoliday(override val uid: String) extends Transformer with colu
         minimum.toInt
     }
 
+    // function that returns a udf so that we can also have input params
     def proximityToHolidayUDF(holidays : Array[LocalDate]) : org.apache.spark.sql.expressions.UserDefinedFunction = {
         return udf( (s : String) => proximityToHoliday(s, holidays))
     }
 
+    // function that adds holidays to an array
     def computeHolidaysForYears(presentYears : Array[String]) : Array[LocalDate] = {
         var holidays = Array[LocalDate]()
         val holidayCalendarObj = new holidayCalendar
@@ -665,10 +677,13 @@ class proximityToHoliday(override val uid: String) extends Transformer with colu
 
         var usableDF = df.toDF
         if (columnExists(usableDF, "Year")){
+            // get every present year
             val presentYears = usableDF.select(col("Year")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+            // drop year if there s only 1 year present
             if (presentYears.length == 1){
                 usableDF = usableDF.drop("Year")
             }
+            // get holiday dates for that year
             val holidays = computeHolidaysForYears(presentYears)
             // use the previously created column to create a proximityToHoliday column
             if (columnExists(usableDF, "dateFormattedString")){
@@ -696,6 +711,7 @@ class depDelayTaxiOutInteraction(override val uid: String) extends Transformer w
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
+        // self-explanatory, we add a new column that is the multiplication between depdelay and taxiout
         if ((columnExists(usableDF, "DepDelay")) && (columnExists(usableDF, "TaxiOut")))
             usableDF = usableDF.withColumn("depDelayTaxiOutInteraction", (col("DepDelay") * col("TaxiOut")))
         usableDF
@@ -716,6 +732,7 @@ class origDestInteraction(override val uid: String) extends Transformer with col
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
+        // self-explanatory, we add a new column that is the multiplication between origin and dest
         if ((columnExists(usableDF, "Origin")) && (columnExists(usableDF, "Dest")))
             usableDF = usableDF.withColumn("origDestInteraction", col("Origin") * col("Dest"))
         usableDF
@@ -736,6 +753,7 @@ class monthDayofMonthInteraction(override val uid: String) extends Transformer w
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
+        // self-explanatory, we add a new column that is the multiplication between month and dayofmonth
         if ((columnExists(usableDF, "Month")) && (columnExists(usableDF, "DayofMonth")))
             usableDF = usableDF.withColumn("monthDayofMonthInteraction", col("Month") * col("DayofMonth"))
         usableDF
@@ -756,6 +774,7 @@ class depDelayOrigInteraction(override val uid: String) extends Transformer with
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
+        // self-explanatory, we add a new column that is the multiplication between depdelay and origin
         if ((columnExists(usableDF, "DepDelay")) && (columnExists(usableDF, "Origin")))
             usableDF = usableDF.withColumn("depDelayOrigInteraction", (col("DepDelay") * col("Origin")))
         usableDF
@@ -764,7 +783,7 @@ class depDelayOrigInteraction(override val uid: String) extends Transformer with
     override def transformSchema(schema: StructType): StructType = schema
 }
 
-// added an interaction variable between DepDelay and CRSArrTime
+// added an interaction variable between DepDelay and CRSDepTime
 class depDelayCRSDepTimeInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
     override def copy(extra: ParamMap): depDelayCRSDepTimeInteraction = defaultCopy(extra)
 
@@ -776,7 +795,8 @@ class depDelayCRSDepTimeInteraction(override val uid: String) extends Transforme
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
-        if ((columnExists(usableDF, "DepTime")) && (columnExists(usableDF, "CRSDepTime")))
+        // self-explanatory, we add a new column that is the multiplication between depdelay and crsdeptime
+        if ((columnExists(usableDF, "DepDelay")) && (columnExists(usableDF, "CRSDepTime")))
             usableDF = usableDF.withColumn("depDelayCRSDepTimeInteraction", (col("DepDelay") * col("CRSDepTime")))
         usableDF
     }
@@ -784,6 +804,7 @@ class depDelayCRSDepTimeInteraction(override val uid: String) extends Transforme
     override def transformSchema(schema: StructType): StructType = schema
 }
 
+// just drop everything that is still string (for whatever reason) by the end of the pipeline
 class dropRemainingString(override val uid: String) extends Transformer{    
     override def copy(extra: ParamMap): dropRemainingString = defaultCopy(extra)
 
@@ -793,11 +814,13 @@ class dropRemainingString(override val uid: String) extends Transformer{
         transformSchema(df.schema, logging = true)
 
         var usableDF = df.toDF
-        val possibleEmptyColumns = df.
+        // get all column that are still strings 
+        val possibleStringColumns = df.
             schema.fields.filter(
                 x => x.dataType == org.apache.spark.sql.types.StringType
             ).map(_.name)
-        for (columnName <- possibleEmptyColumns){
+        // drop em
+        for (columnName <- possibleStringColumns){
             usableDF = usableDF.drop(columnName)
         }
         usableDF
@@ -806,6 +829,7 @@ class dropRemainingString(override val uid: String) extends Transformer{
     override def transformSchema(schema: StructType): StructType = schema
 }
 
+// this transformer transforms the model/ engine type from strings to ints if they exist
 class modelEngineType(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
     override def copy(extra: ParamMap): modelEngineType = defaultCopy(extra)
 
@@ -813,10 +837,12 @@ class modelEngineType(override val uid: String) extends Transformer with columnE
 
     def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
 
+    // create function to be called in the UDF function
     def convertWordsToNumbers(element : String, hash : Array[String]) : Int = {
         hash.indexOf(element)
     }
 
+    // function that returns a udf so that we can also have input params
     def createConversionUDF(hash : Array[String]) : org.apache.spark.sql.expressions.UserDefinedFunction = {
         return udf{element : String => convertWordsToNumbers(element, hash)}
     }
@@ -824,15 +850,92 @@ class modelEngineType(override val uid: String) extends Transformer with columnE
     override def transform(df: Dataset[_]) : DataFrame = {
         transformSchema(df.schema, logging = true)
 
+
         var usableDF = df.toDF
         if (columnExists(usableDF, "model")){
-        val companiesKeys = usableDF.select(col("model")).distinct.collect.flatMap(_.toSeq).map(_.toString)
-        usableDF = usableDF.withColumn("model", createConversionUDF(companiesKeys)(col("model")))
+        // get a map containing all keys mapped to their location and use that to cast strings to integer
+        val modelKeys = usableDF.select(col("model")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+        usableDF = usableDF.withColumn("model", createConversionUDF(modelKeys)(col("model")))
         }
 
         if (columnExists(usableDF, "engine_type")){
-        val flightNumKeys = usableDF.select(col("engine_type")).distinct.collect.flatMap(_.toSeq).map(_.toString)
-        usableDF = usableDF.withColumn("engine_type", createConversionUDF(flightNumKeys)(col("engine_type")))
+        // get a map containing all keys mapped to their location and use that to cast strings to integer            
+        val engineKeys = usableDF.select(col("engine_type")).distinct.collect.flatMap(_.toSeq).map(_.toString)
+        usableDF = usableDF.withColumn("engine_type", createConversionUDF(engineKeys)(col("engine_type")))
+        }
+        usableDF
+    }
+
+    override def transformSchema(schema: StructType): StructType = schema
+}
+
+// class name is self-explanatory
+class addSecondDegreeTerms(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
+    override def copy(extra: ParamMap): addSecondDegreeTerms = defaultCopy(extra)
+
+    def this() = this(Identifiable.randomUID("addSecondDegreeTerms"))
+
+    def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
+
+    override def transform(df: Dataset[_]) : DataFrame = {
+        transformSchema(df.schema, logging = true)
+
+        var usableDF = df.toDF
+        var variableNames = usableDF.columns.filter(_ != "ArrDelay")
+        // if the machine learning alg is lr then we add 2nd degree terms to also model nonlinearity
+        for (colName <- variableNames){
+            if (!(colName.toLowerCase contains "interaction")){
+                var new_name = colName + "Squared"
+                usableDF = usableDF.withColumn(new_name, col(colName) * col(colName))
+            }
+        }
+        usableDF
+    }
+
+    override def transformSchema(schema: StructType): StructType = schema
+}
+
+// added a transformer to add square terms in case of LR
+class addSquaredTerms(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
+    override def copy(extra: ParamMap): addSquaredTerms = defaultCopy(extra)
+
+    def this() = this(Identifiable.randomUID("addSquaredTerms"))
+
+    def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
+
+    // function to be called in the UDF
+    def createNewVector(x : Vector, columnNames : scala.collection.immutable.Map[Int, String]) : Vector = {
+        var index = 0 
+        var auxArray = x.toArray // get the original array
+        val arrayForIteration = x.toArray // get the same one for iterating over
+        // iterate over the array, if the variable is not an interaction one, add a square term to the new array
+        for (item <- arrayForIteration){
+            try{
+                if (!(columnNames(index).toLowerCase contains ("interaction"))){
+                    auxArray = auxArray :+ item * item
+                }
+            } catch {case e: Exception => index = index}
+            index += 1
+        }
+        // create the new vector from the new array
+        val newVector  = Vectors.dense(auxArray)
+        // return it 
+        newVector
+    }
+    
+    // function that returns a udf so that we can also have input params
+    def createSquaredTermsUDF(columnNames : scala.collection.immutable.Map[Int, String]) : org.apache.spark.sql.expressions.UserDefinedFunction = {
+        return udf{ s : Vector => createNewVector(s, columnNames)}
+    }
+
+    override def transform(df: Dataset[_]) : DataFrame = {
+        transformSchema(df.schema, logging = true)
+
+        var usableDF = df.toDF
+        if (columnExists(usableDF, "scaledFeatures")){  
+            // get the columnNames so with their order in the features array so we can identify them in the UDF function
+            val columnNames = usableDF.columns.filter( x => ((x != "features") && (x != "scaledFeatures") && (x != "proximityToHoliday"))).zipWithIndex.map( x => (x._2, x._1)).toMap
+            usableDF = usableDF.withColumn("scaledFeatures", createSquaredTermsUDF(columnNames)(col("scaledFeatures")))
         }
         usableDF
     }
