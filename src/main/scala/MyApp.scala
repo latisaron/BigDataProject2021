@@ -67,7 +67,6 @@ object MyApp extends remainingMethodsClass{
         val emptyColumnsAndFieldsTransformer = new emptyColumnsAndFields().setHandleInvalid("skip") // get all string columns && remove all remaining null fields OR drop column with too many NAs
         val formattedDateTransformer = new formattedDate().setHandleInvalid("skip")  // add column for further analysis (proximityToHolidayTransformer   )
         val stringTypesToIntTransformer = new stringTypesToInt().setHandleInvalid("skip") // cast possible string columns to integer
-        val stringHoursToIntTransformer = new stringHoursToInt().setHandleInvalid("skip") // cast the CRSDepTime to int using magic formula
         val modelEngineTypeTransformer = new modelEngineType().setHandleInvalid("skip") // change strings to numbers for discrete values for those 2 columns
         val countriesAndCarriersAndFlightNumToNumbersTransformer = new countriesAndCarriersAndFlightNumToNumbers().setHandleInvalid("skip") // here we collect all the countries/carrierCodes present in origin/dest/codes & change strings to numbers
         val proximityToHolidayTransformer = new proximityToHoliday().setHandleInvalid("skip") // here we compute the US holiday/event list for those Year values (holidayCalendar class defined below)
@@ -76,7 +75,6 @@ object MyApp extends remainingMethodsClass{
             emptyColumnsAndFieldsTransformer,
             formattedDateTransformer,
             stringTypesToIntTransformer,
-            stringHoursToIntTransformer,
             modelEngineTypeTransformer,
             countriesAndCarriersAndFlightNumToNumbersTransformer,
             proximityToHolidayTransformer
@@ -92,8 +90,6 @@ object MyApp extends remainingMethodsClass{
             pipelineStages = pipelineStages :+ monthDayofMonthInteractionTransformer
             val depDelayOrigInteractionTransformer = new depDelayOrigInteraction().setHandleInvalid("skip")
             pipelineStages = pipelineStages :+ depDelayOrigInteractionTransformer
-            val depDelayCRSDepTimeInteractionTransformer = new depDelayCRSDepTimeInteraction().setHandleInvalid("skip")
-            pipelineStages = pipelineStages :+ depDelayCRSDepTimeInteractionTransformer
         }
         val dropRemainingStringTransformer = new dropRemainingString() // just drop anything that was not succesfully converted to Int
         pipelineStages = pipelineStages :+ dropRemainingStringTransformer
@@ -115,7 +111,7 @@ object MyApp extends remainingMethodsClass{
         val featuresDF = pipelineAssemblerRes.transform(intermediaryDF)
 
         // split the data
-        val splitData = featuresDF.randomSplit(Array(0.8, 0.2))
+        val splitData = featuresDF.randomSplit(Array(0.99, 0.01))
 
         // get training and test
         var training = splitData(0)
@@ -458,7 +454,7 @@ class dropper(override val uid: String) extends Transformer with HasHandleInvali
         val featuresToBeDropped = Array(
             "ArrTime", "ActualElapsedTime", "AirTime", "Diverted", "CarrierDelay", "WeatherDelay", "NASDelay", "SecurityDelay", "LateAircraftDelay", "TaxiIn", // find then drop the forbidden columns
             "TailNum",    // also drop the TailNum column given that it's an ID and it's not useful forE
-            "CRSArrTime", "DepTime", // drop because they're all in different timezones + we have CRSElapsedTime and DepDelay
+            "CRSArrTime", "DepTime", "CRSDepTime", // drop because they're all in different timezones + we have CRSElapsedTime and DepDelay
             "Cancelled", "CancellationCode" // these are also useless after we deleted rows with missing data
         )
         val usableDF = noCancelColumnDF.drop(featuresToBeDropped: _*)
@@ -554,43 +550,6 @@ class stringTypesToInt(override val uid: String) extends Transformer with column
             usableDF = usableDF.withColumn(columnName, col(columnName).cast("integer"))
         }
         usableDF
-    }
-
-    override def transformSchema(schema: StructType): StructType = schema
-}
-
-// this converts hour dates from strings to ints by computing the according minutes
-class stringHoursToInt(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
-    override def copy(extra: ParamMap): stringHoursToInt = defaultCopy(extra)
-
-    def this() = this(Identifiable.randomUID("stringHoursToInt"))
-
-    def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
-
-    // udf that converts the hour into an integer using a simple formula
-    def convertStringTimeUDF() : org.apache.spark.sql.expressions.UserDefinedFunction = {
-        return udf( (s : String) => {
-            try{
-                s.takeRight(2).toInt + s.reverse.slice(2,4).reverse.toInt * 60
-            } 
-            catch{ 
-                case e: java.lang.NumberFormatException =>
-                    0
-            }
-    })}
-
-    override def transform(df: Dataset[_]) : DataFrame = {
-        transformSchema(df.schema, logging = true)
-        
-        val stringTimeTypes = Array("CRSDepTime")
-        var usableDF = df.toDF
-        // just convert hour string columns to integers
-        // the for is there in case we want to add extra hour string columns to be casted :D
-        for ( columnName <- stringTimeTypes ){
-            if (columnExists(usableDF, columnName))
-                usableDF = usableDF.withColumn(columnName, convertStringTimeUDF()(col(columnName)))
-        }
-        usableDF 
     }
 
     override def transformSchema(schema: StructType): StructType = schema
@@ -798,27 +757,6 @@ class depDelayOrigInteraction(override val uid: String) extends Transformer with
         // self-explanatory, we add a new column that is the multiplication between depdelay and origin
         if ((columnExists(usableDF, "DepDelay")) && (columnExists(usableDF, "Origin")))
             usableDF = usableDF.withColumn("depDelayOrigInteraction", (col("DepDelay") * col("Origin")))
-        usableDF
-    }
-
-    override def transformSchema(schema: StructType): StructType = schema
-}
-
-// added an interaction variable between DepDelay and CRSDepTime
-class depDelayCRSDepTimeInteraction(override val uid: String) extends Transformer with columnExisting with HasHandleInvalid{    
-    override def copy(extra: ParamMap): depDelayCRSDepTimeInteraction = defaultCopy(extra)
-
-    def this() = this(Identifiable.randomUID("depDelayCRSDepTimeInteraction"))
-
-    def setHandleInvalid(value: String): this.type = set(handleInvalid, value)
-
-    override def transform(df: Dataset[_]) : DataFrame = {
-        transformSchema(df.schema, logging = true)
-
-        var usableDF = df.toDF
-        // self-explanatory, we add a new column that is the multiplication between depdelay and crsdeptime
-        if ((columnExists(usableDF, "DepDelay")) && (columnExists(usableDF, "CRSDepTime")))
-            usableDF = usableDF.withColumn("depDelayCRSDepTimeInteraction", (col("DepDelay") * col("CRSDepTime")))
         usableDF
     }
 
