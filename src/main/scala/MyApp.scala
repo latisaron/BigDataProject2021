@@ -151,8 +151,6 @@ object MyApp extends remainingMethodsClass{
         
         // pray to God the results are good
         println(lr_evaluator.evaluate(testTransformed))
-
-        //("C:\\Users\\User\\Desktop\\UPM_2021_2022\\SEMESTER_1\\BIG_DATA\\project\\empty_example.csv" )
     }
 }
 
@@ -808,7 +806,6 @@ class modelEngineType(override val uid: String) extends Transformer with columnE
 
     override def transform(df: Dataset[_]) : DataFrame = {
         transformSchema(df.schema, logging = true)
-
 
         var usableDF = df.toDF
         if (columnExists(usableDF, "model")){
